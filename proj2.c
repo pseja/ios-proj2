@@ -2,14 +2,18 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <unistd.h>
+#include <sys/types.h> // pid_t type
+#include <sys/wait.h>
+#include <time.h>
 
 typedef struct arguments
 {
-    int L;  // počet lyžařů
-    int Z;  // počet nástupních zastávek
-    int K;  // kapacita skibusu
-    int KL; // maximální čas v mikrosekundách, který lyžař čeká, než přijde na zastávku
-    int TB; // maximální doba jízdy autobusu mezi dvěma zastávkami
+    int L;  // počet lyžařů, L < 20'000
+    int Z;  // počet nástupních zastávek 0 < Z <= 10
+    int K;  // kapacita skibusu, 10 <= K <= 100
+    int KL; // Maximální čas v mikrosekundách, který lyžař čeká, než přijde na zastávku, 0 <= TL <= 10'000
+    int TB; // Maximální doba jízdy autobusu mezi dvěma zastávkami, 0 <= TB <= 1'000
 } Arguments;
 
 void print_usage()
@@ -56,6 +60,18 @@ int handle_arguments(Arguments *args, int argc, char **argv)
     return 0;
 }
 
+int skibus_process(Arguments *args)
+{
+    printf("skibus(%d) created, it's parent is %d\n    > needs to go to %d stops\n    > capacity: %d skiers\n", getpid(), getppid(), args->Z, args->K);
+    return 0;
+}
+
+int skier_process(int idZ, int i)
+{
+    printf("%d. skier(%d) created, it's parent is %d and it's bus stop is: %d\n", i, getpid(), getppid(), idZ);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     Arguments args;
@@ -65,5 +81,34 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    setbuf(stdout, NULL);
+
+    // Proces vytváří ihned po spuštění proces skibus.
+    if (fork() == 0)
+    {
+        skibus_process(&args);
+        exit(0);
+    }
+
+    // Dále vytvoří L procesů lyžařů.
+    for (int i = 0; i < args.L; i++)
+    {
+        if (fork() == 0)
+        {
+            // Každému lyžaři při jeho spuštění náhodně přidělí nástupní zastávku.
+            srand(getpid() + time(NULL));
+            int idZ = (rand() % args.Z) + 1;
+
+            skier_process(idZ, i);
+
+            exit(0);
+        }
+    }
+
+    // Poté čeká na ukončení všech procesů, které aplikace vytváří.
+    while (wait(NULL) > 0)
+        ;
+
+    // Jakmile jsou tyto procesy ukončeny, ukončí se i hlavní proces s kódem (exit code) 0.
     return 0;
 }
