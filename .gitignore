@@ -8,3 +8,5 @@
 .vscode/
 
 !Makefile
+
+proj2.out
