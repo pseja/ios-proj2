@@ -6,6 +6,16 @@
 #include <sys/types.h> // pid_t type
 #include <sys/wait.h>
 #include <time.h>
+#include <semaphore.h>
+#include <sys/mman.h>
+
+#define MAP(pointer) mmap(NULL, sizeof(*(pointer)), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0)
+#define SLEEP(time)                     \
+    {                                   \
+        if (time != 0)                  \
+            sleep((rand() % time) + 1); \
+    }
+#define UNMAP(pointer) munmap((pointer), sizeof((pointer)))
 
 typedef struct arguments
 {
@@ -15,6 +25,13 @@ typedef struct arguments
     int KL; // Maximální čas v mikrosekundách, který lyžař čeká, než přijde na zastávku, 0 <= TL <= 10'000
     int TB; // Maximální doba jízdy autobusu mezi dvěma zastávkami, 0 <= TB <= 1'000
 } Arguments;
+
+FILE *output_file;
+int *action_number = NULL;
+int *waiting = NULL;
+sem_t *mutex = NULL;
+sem_t *bus = NULL;
+sem_t *boarded = NULL;
 
 void print_usage()
 {
@@ -62,13 +79,119 @@ int handle_arguments(Arguments *args, int argc, char **argv)
 
 int skibus_process(Arguments *args)
 {
-    printf("skibus(%d) created, it's parent is %d\n    > needs to go to %d stops\n    > capacity: %d skiers\n", getpid(), getppid(), args->Z, args->K);
+    // INICIALIZACE
+    // ----------------------------
+    // waiting = 0
+    // mutex = new Semaphore(1)
+    // bus = new Semaphore(0)
+    // boarded = new Semaphore(0)
+
+    // BUS
+    // ----------------------------
+    // mutex.wait()
+    // n = min(waiting, 50)
+    // for i in range(n):
+    //     bus.signal()
+    //     boarded.wait()
+    //
+    // waiting = max(waiting-50, 0)
+    // mutex.signal()
+    //
+    // depart()
+
+    // Po spuštění vypíše: A: BUS: started
+    fprintf(output_file, "%d: BUS: started\n", *action_number);
+
+    // (#) idZ = 1 (identifikace zastávky)
+    int idZ = 1;
+    // TODO tohle je možná do while
+    while (idZ < args->Z)
+    {
+        // (*) Jede na zastávku idZ---čeká pomocí volání usleep náhodný čas v intervalu <0, TB>
+        usleep(rand() % args->TB);
+
+        // Vypíše: A: BUS: arrived to idZ
+        fprintf(output_file, "%d: BUS: arrived to %d\n", ++(*action_number), idZ);
+
+        // Nechá nastoupit všechny čekající lyžaře do kapacity autobusu
+
+        // Vypíše: A: BUS: leaving idZ
+        fprintf(output_file, "%d: BUS: leaving %d\n", ++(*action_number), idZ);
+
+        // Pokud idZ<Z, tak idZ=idZ+1 a pokračuje bodem (*)
+        if (idZ < args->Z)
+        {
+            idZ++;
+        }
+        else
+        {
+            break;
+        }
+    }
+
+    // Jinak jede na výstupní zastávku---čeká pomocí volání usleep náhodný čas v intervalu <0,TB>.
+    usleep(rand() % args->TB);
+
+    // Vypíše: A: BUS: arrived to final
+    fprintf(output_file, "%d: BUS: arrived to final\n", ++(*action_number));
+
+    // Nechá vystoupit všechny lyžaře
+
+    // Vypíše: A: BUS: leaving final
+    fprintf(output_file, "%d: BUS: leaving final\n", ++(*action_number));
+
+    // Pokud ještě nějací lyžaři čekají na některé ze zastávek/mohou přijít na zastávku, tak pokračuje bodem (#)
+
+    // Jinak vypíše: A: BUS: finish
+    fprintf(output_file, "%d: BUS: finish\n", ++(*action_number));
+
+    // Proces končí
+    // fprintf(output_file, "skibus(%d) created, it's parent is %d\n    > needs to go to %d stops\n    > capacity: %d skiers\n", getpid(), getppid(), args->Z, args->K);
+    fprintf(output_file, "skibus umírá\n");
     return 0;
 }
 
-int skier_process(int idZ, int i)
+int skier_process(Arguments *args, int idZ, int i)
 {
-    printf("%d. skier(%d) created, it's parent is %d and it's bus stop is: %d\n", i, getpid(), getppid(), idZ);
+    // LYŽAŘI
+    // ----------------
+    // mutex.wait()
+    //     waiting += 1
+    // mutex.signal()
+    //
+    // bus.wait()
+    // board()
+    // boarded.signal()
+
+    // Každý lyžař je jednoznačně identifikován číslem idL, 0<idL<=L
+    int idL = i;
+
+    // Po spuštění vypíše: A: L idL: started
+    fprintf(output_file, "%d: L %d: started\n", ++(*action_number), idL);
+
+    // Dojí snídani---čeká v intervalu <0,TL> mikrosekund.
+    usleep(rand() % args->KL);
+
+    // Jde na přidělenou zastávku idZ.
+
+    // Vypíše: A: L idL: arrived to idZ
+    fprintf(output_file, "%d: L %d: arrived to %d\n", ++(*action_number), idL, idZ);
+
+    // Čeká na příjezd skibusu
+
+    // Po příjezdu skibusu nastoupí (pokud je volná kapacita)
+
+    // Vypíše: A: L idL: boarding
+    fprintf(output_file, "%d: L %d: boarding\n", ++(*action_number), idL);
+
+    // Vyčká na příjezd skibusu k lanovce.
+
+    // Vypíše: A: L idL: going to ski
+    fprintf(output_file, "%d: L %d: going to ski\n", ++(*action_number), idL);
+
+    // Proces končí
+    // fprintf(output_file, "%d. skier(%d) created, it's parent is %d and it's bus stop is: %d\n", i, getpid(), getppid(), idZ);
+    fprintf(output_file, "lyžař %d umírá\n", idL);
     return 0;
 }
 
@@ -81,33 +204,67 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    setbuf(stdout, NULL);
+    if ((output_file = fopen("proj2.out", "w+")) == NULL)
+    {
+        fprintf(stderr, "Cannot open output.out file\n");
+        return 2;
+    }
+
+    // Vypnutí bufferování výstupu
+    setbuf(output_file, NULL);
+    setbuf(stderr, NULL);
+
+    // Alokování sdílená paměti
+    action_number = MAP(action_number); // chyba MAP_ANONYMOUS protože windows, může se ignorovat
+    (*action_number)++;
 
     // Proces vytváří ihned po spuštění proces skibus.
-    if (fork() == 0)
+    pid_t skibusPID = fork();
+    if (skibusPID < 0)
+    {
+        fprintf(stderr, "Skibus proces problém\n");
+        return 1;
+    }
+    else if (skibusPID == 0)
     {
         skibus_process(&args);
-        exit(0);
+
+        return 0;
     }
 
     // Dále vytvoří L procesů lyžařů.
     for (int i = 0; i < args.L; i++)
     {
-        if (fork() == 0)
+        pid_t skierPID = fork();
+        if (skierPID < 0)
+        {
+            fprintf(stderr, "Skibus proces problém\n");
+            return 1;
+        }
+        else if (skierPID == 0)
         {
             // Každému lyžaři při jeho spuštění náhodně přidělí nástupní zastávku.
             srand(getpid() + time(NULL));
             int idZ = (rand() % args.Z) + 1;
 
-            skier_process(idZ, i);
+            skier_process(&args, idZ, i + 1);
 
-            exit(0);
+            return 0;
         }
     }
 
     // Poté čeká na ukončení všech procesů, které aplikace vytváří.
     while (wait(NULL) > 0)
         ;
+
+    if (fclose(output_file) == EOF)
+    {
+        fprintf(stderr, "Error closing output.out");
+        return 3;
+    }
+
+    // Odalokování sdílené paměti
+    UNMAP(action_number);
 
     // Jakmile jsou tyto procesy ukončeny, ukončí se i hlavní proces s kódem (exit code) 0.
     return 0;
