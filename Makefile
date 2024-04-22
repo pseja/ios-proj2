@@ -6,9 +6,6 @@ CFLAGS=-std=gnu99 -Wall -Wextra -Werror -pedantic
 proj2: proj2.c
 	$(CC) $(CFLAGS) $< -o $@
 
-# run: proj2
-# 	./proj2
-
 clean:
 	rm -f proj2
 

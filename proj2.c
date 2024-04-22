@@ -9,6 +9,8 @@
 #include <semaphore.h>
 #include <sys/mman.h>
 
+// TODO POLE SEMAFORŮ
+
 #define MAX(x, y) (((x) >= (y)) ? (x) : (y))
 #define MIN(x, y) (((x) <= (y)) ? (x) : (y))
 
@@ -25,7 +27,7 @@ typedef struct arguments
     int L;  // počet lyžařů, L < 20'000
     int Z;  // počet nástupních zastávek 0 < Z <= 10
     int K;  // kapacita skibusu, 10 <= K <= 100
-    int KL; // Maximální čas v mikrosekundách, který lyžař čeká, než přijde na zastávku, 0 <= TL <= 10'000
+    int TL; // Maximální čas v mikrosekundách, který lyžař čeká, než přijde na zastávku, 0 <= TL <= 10'000
     int TB; // Maximální doba jízdy autobusu mezi dvěma zastávkami, 0 <= TB <= 1'000
 } Arguments;
 
@@ -38,6 +40,7 @@ int *waiting_sum = NULL;
 sem_t *mutex = NULL;
 sem_t *bus = NULL;
 sem_t *boarded = NULL;
+sem_t *bus_stops_semaphores = NULL;
 
 void print_usage()
 {
@@ -77,7 +80,7 @@ int handle_arguments(Arguments *args, int argc, char **argv)
     args->L = atoi(argv[1]);
     args->Z = atoi(argv[2]);
     args->K = atoi(argv[3]);
-    args->KL = atoi(argv[4]);
+    args->TL = atoi(argv[4]);
     args->TB = atoi(argv[5]);
 
     return 0;
@@ -185,7 +188,7 @@ int skier_process(Arguments *args, int idZ, int i)
     fprintf(output_file, "%d: L %d: started\n", ++(*action_number), idL);
 
     // Dojí snídani---čeká v intervalu <0,TL> mikrosekund.
-    usleep(rand() % args->KL);
+    usleep(rand() % args->TL);
 
     // Jde na přidělenou zastávku idZ.
 
@@ -196,7 +199,7 @@ int skier_process(Arguments *args, int idZ, int i)
     (*waiting_sum)++;
 
     // Čeká na příjezd skibusu
-    // TODO for loop, kterej dá wait tolikrát, na kolikáté je lyžař zastávce? a potom se ve skibusu postupně dává post a tím se pouští lyžaři na zastávkách?
+    sem_post(&bus_stops_semaphores[idZ - 1]);
 
     // Po příjezdu skibusu nastoupí (pokud je volná kapacita)
     if (*num_of_skiers_in_bus <= args->K)
@@ -234,6 +237,68 @@ int initialize_semaphore(sem_t *semaphore, int initialization_value)
     return 0;
 }
 
+void alocate_shared_memory(Arguments *args)
+{
+    action_number = MAP(action_number); // chyba MAP_ANONYMOUS protože windows, může se ignorovat
+    (*action_number)++;
+    num_of_skiers_in_bus = MAP(num_of_skiers_in_bus);
+    waiting = (int *)mmap(NULL, sizeof(*waiting) * args->Z, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    waiting_sum = MAP(waiting_sum);
+    bus_capacity = MAP(bus_capacity);
+    bus_stops_semaphores = (sem_t *)mmap(NULL, sizeof(*bus_stops_semaphores) * args->Z, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+}
+
+void unallocate_shared_memory(Arguments *args)
+{
+    UNMAP(action_number);
+    UNMAP(num_of_skiers_in_bus);
+    munmap(waiting, sizeof(int) * args->Z);
+    UNMAP(waiting_sum);
+    UNMAP(bus_capacity);
+    UNMAP(mutex);
+    UNMAP(bus);
+    UNMAP(boarded);
+}
+
+int initialize_semaphores(Arguments *args)
+{
+    if (initialize_semaphore(mutex, 1) != 0)
+    {
+        return 1;
+    }
+    if (initialize_semaphore(bus, 0) != 0)
+    {
+        return 1;
+    }
+    if (initialize_semaphore(boarded, 0) != 0)
+    {
+        return 1;
+    }
+
+    for (int i = 0; i < args->Z; i++)
+    {
+        if (sem_init(&bus_stops_semaphores[i], 1, 0) == -1)
+        {
+            perror("sem_init");
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+void destroy_semaphores(Arguments *args)
+{
+    sem_destroy(mutex);
+    sem_destroy(bus);
+    sem_destroy(boarded);
+
+    for (int i = 0; i < args->Z; i++)
+    {
+        sem_destroy(&bus_stops_semaphores[i]);
+    }
+}
+
 int main(int argc, char **argv)
 {
     Arguments args;
@@ -254,22 +319,9 @@ int main(int argc, char **argv)
     setbuf(stderr, NULL);
 
     // Alokování sdílená paměti
-    action_number = MAP(action_number); // chyba MAP_ANONYMOUS protože windows, může se ignorovat
-    (*action_number)++;
-    num_of_skiers_in_bus = MAP(num_of_skiers_in_bus);
-    waiting = (int *)mmap(NULL, sizeof(int) * args.Z, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-    waiting_sum = MAP(waiting_sum);
-    bus_capacity = MAP(bus_capacity);
+    alocate_shared_memory(&args);
 
-    if (initialize_semaphore(mutex, 1) != 0)
-    {
-        return 1;
-    }
-    if (initialize_semaphore(bus, 0) != 0)
-    {
-        return 1;
-    }
-    if (initialize_semaphore(boarded, 0) != 0)
+    if (initialize_semaphores(&args) != 0)
     {
         return 1;
     }
@@ -311,7 +363,9 @@ int main(int argc, char **argv)
 
     // Poté čeká na ukončení všech procesů, které aplikace vytváří.
     while (wait(NULL) > 0)
+    {
         ;
+    }
 
     if (fclose(output_file) == EOF)
     {
@@ -319,18 +373,11 @@ int main(int argc, char **argv)
         return 3;
     }
 
+    // znič semafory
+    destroy_semaphores(&args);
+
     // Odalokování sdílené paměti
-    UNMAP(action_number);
-    UNMAP(num_of_skiers_in_bus);
-    munmap(waiting, sizeof(int) * args.Z);
-    UNMAP(waiting_sum);
-    UNMAP(bus_capacity);
-    sem_destroy(mutex);
-    sem_destroy(bus);
-    sem_destroy(boarded);
-    UNMAP(mutex);
-    UNMAP(bus);
-    UNMAP(boarded);
+    unallocate_shared_memory(&args);
 
     // Jakmile jsou tyto procesy ukončeny, ukončí se i hlavní proces s kódem (exit code) 0.
     return 0;
