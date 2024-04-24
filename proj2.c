@@ -8,8 +8,7 @@
 #include <time.h>
 #include <semaphore.h>
 #include <sys/mman.h>
-
-// TODO POLE SEMAFORŮ
+#include <stdbool.h>
 
 #define MAX(x, y) (((x) >= (y)) ? (x) : (y))
 #define MIN(x, y) (((x) <= (y)) ? (x) : (y))
@@ -32,15 +31,20 @@ typedef struct arguments
 } Arguments;
 
 FILE *output_file;
+
 int *action_number = NULL;
+int *bus_stop = NULL;
 int *num_of_skiers_in_bus = NULL;
-int *bus_capacity = NULL;
 int *waiting = NULL;
 int *waiting_sum = NULL;
-sem_t *mutex = NULL;
-sem_t *bus = NULL;
-sem_t *boarded = NULL;
+int *bus_capacity = NULL;
+int *skiers_not_skiing = NULL;
+
+sem_t *sem_file_write = NULL;
+sem_t *sem_skier_waiting = NULL;
 sem_t *bus_stops_semaphores = NULL;
+sem_t *boarded = NULL;
+sem_t *unboarded = NULL;
 
 void print_usage()
 {
@@ -88,191 +92,213 @@ int handle_arguments(Arguments *args, int argc, char **argv)
 
 int skibus_process(Arguments *args)
 {
-    // INICIALIZACE
-    // ----------------------------
-    // waiting = 0
-    // mutex = new Semaphore(1)
-    // bus = new Semaphore(0)
-    // boarded = new Semaphore(0)
-
-    // BUS
-    // ----------------------------
-    // mutex.wait()
-    // n = min(waiting, 50)
-    // for i in range(n):
-    //     bus.signal()
-    //     boarded.wait()
-    //
-    // waiting = max(waiting-50, 0)
-    // mutex.signal()
-    //
-    // depart()
-
     // Po spuštění vypíše: A: BUS: started
-    fprintf(output_file, "%d: BUS: started\n", *action_number);
+    sem_wait(sem_file_write);
+    fprintf(output_file, "%d: BUS: started\n", ++(*action_number));
+    sem_post(sem_file_write);
 
-    // (#) idZ = 1 (identifikace zastávky)
+    int idZ = 1;
+    bool bus_finished_run = false;
+
     do
     {
-        int idZ = 1;
-        *num_of_skiers_in_bus = 0;
-
-        // TODO tohle je možná do while
-        while (idZ <= args->Z)
+        // (#) idZ = 1 (identifikace zastávky)
+        if (*skiers_not_skiing > 0 && bus_finished_run)
         {
-            // (*) Jede na zastávku idZ---čeká pomocí volání usleep náhodný čas v intervalu <0, TB>
-            usleep(rand() % args->TB);
+            idZ = 1;
+            bus_finished_run = false;
+        }
 
-            // Vypíše: A: BUS: arrived to idZ
-            fprintf(output_file, "%d: BUS: arrived to %d\n", ++(*action_number), idZ);
+        // (*) Jede na zastávku idZ---čeká pomocí volání usleep náhodný čas v intervalu <0, TB>
+        srand(getpid() + time(NULL));
+        usleep(rand() % args->TB);
 
-            // Nechá nastoupit všechny čekající lyžaře do kapacity autobusu
-            while (waiting[idZ - 1] > 0)
-            {
-                ;
-            }
+        // Vypíše: A: BUS: arrived to idZ
+        sem_wait(sem_file_write);
+        fprintf(output_file, "%d: BUS: arrived to %d\n", ++(*action_number), idZ);
+        sem_post(sem_file_write);
 
-            // depart()
+        // Nechá nastoupit všechny čekající lyžaře do kapacity autobusu
+        while (*num_of_skiers_in_bus < args->K && waiting[idZ - 1] > 0)
+        {
+            sem_post(&bus_stops_semaphores[idZ - 1]);
+            sem_wait(&bus_stops_semaphores[idZ - 1]);
+        }
 
-            // Vypíše: A: BUS: leaving idZ
-            fprintf(output_file, "%d: BUS: leaving %d\n", ++(*action_number), idZ);
+        // Vypíše: A: BUS: leaving idZ
+        sem_wait(sem_file_write);
+        fprintf(output_file, "%d: BUS: leaving %d\n", ++(*action_number), idZ);
+        sem_post(sem_file_write);
 
-            // Pokud idZ<Z, tak idZ=idZ+1 a pokračuje bodem (*)
-            if (idZ < args->Z)
-            {
-                idZ++;
-            }
-            else
-            {
-                break;
-            }
+        // Pokud idZ<Z, tak idZ=idZ+1 a pokračuje bodem (*)
+        if (idZ < args->Z)
+        {
+            idZ++;
+            continue;
         }
 
         // Jinak jede na výstupní zastávku---čeká pomocí volání usleep náhodný čas v intervalu <0,TB>.
         usleep(rand() % args->TB);
 
         // Vypíše: A: BUS: arrived to final
+        sem_wait(sem_file_write);
         fprintf(output_file, "%d: BUS: arrived to final\n", ++(*action_number));
+        sem_post(sem_file_write);
 
         // Nechá vystoupit všechny lyžaře
+        int skiers_in_bus_save = *num_of_skiers_in_bus;
+
+        while (*num_of_skiers_in_bus > 0)
+        {
+            sem_post(boarded);
+            (*num_of_skiers_in_bus)--;
+        }
+
+        for (int i = 0; i < skiers_in_bus_save; i++)
+        {
+            sem_wait(unboarded);
+        }
 
         // Vypíše: A: BUS: leaving final
+        sem_wait(sem_file_write);
         fprintf(output_file, "%d: BUS: leaving final\n", ++(*action_number));
+        fprintf(output_file, "skiers_not_skiing: %d\n", *skiers_not_skiing);
+        sem_post(sem_file_write);
 
         // Pokud ještě nějací lyžaři čekají na některé ze zastávek/mohou přijít na zastávku, tak pokračuje bodem (#)
-    } while (*waiting_sum > 0);
+        bus_finished_run = true;
+    } while (*skiers_not_skiing > 0);
 
     // Jinak vypíše: A: BUS: finish
+    sem_wait(sem_file_write);
     fprintf(output_file, "%d: BUS: finish\n", ++(*action_number));
+    sem_post(sem_file_write);
 
     // Proces končí
-    return 0;
+    exit(0);
 }
 
-int skier_process(Arguments *args, int idZ, int i)
+int skier_process(Arguments *args, int idZ, int idL)
 {
-    // LYŽAŘI
-    // ----------------
-    // mutex.wait()
-    //     waiting += 1
-    // mutex.signal()
-    //
-    // bus.wait()
-    // board()
-    // boarded.signal()
-
     // Každý lyžař je jednoznačně identifikován číslem idL, 0<idL<=L
-    int idL = i;
+    // parametr funkce
 
     // Po spuštění vypíše: A: L idL: started
+    sem_wait(sem_file_write);
     fprintf(output_file, "%d: L %d: started\n", ++(*action_number), idL);
+    sem_post(sem_file_write);
 
     // Dojí snídani---čeká v intervalu <0,TL> mikrosekund.
+    srand(getpid() + time(NULL));
     usleep(rand() % args->TL);
 
     // Jde na přidělenou zastávku idZ.
 
-    // Vypíše: A: L idL: arrived to idZ
-    fprintf(output_file, "%d: L %d: arrived to %d\n", ++(*action_number), idL, idZ);
-
+    // Čeká na příjezd skibusu
+    sem_wait(&sem_skier_waiting[idZ - 1]);
     waiting[idZ - 1]++;
     (*waiting_sum)++;
+    sem_post(&sem_skier_waiting[idZ - 1]);
 
-    // Čeká na příjezd skibusu
-    sem_post(&bus_stops_semaphores[idZ - 1]);
+    // Vypíše: A: L idL: arrived to idZ
+    sem_wait(sem_file_write);
+    fprintf(output_file, "%d: L %d: arrived to %d\n", ++(*action_number), idL, idZ);
+    sem_post(sem_file_write);
 
     // Po příjezdu skibusu nastoupí (pokud je volná kapacita)
-    if (*num_of_skiers_in_bus <= args->K)
-    {
-        (*num_of_skiers_in_bus)++;
-        waiting[idZ - 1]--;
-        (*waiting_sum)--;
-    }
+    sem_wait(&bus_stops_semaphores[idZ - 1]);
+    (*num_of_skiers_in_bus)++;
+    waiting[idZ - 1]--;
+    (*waiting_sum)--;
 
     // Vypíše: A: L idL: boarding
+    sem_wait(sem_file_write);
     fprintf(output_file, "%d: L %d: boarding\n", ++(*action_number), idL);
+    sem_post(sem_file_write);
+    sem_post(&bus_stops_semaphores[idZ - 1]);
 
     // Vyčká na příjezd skibusu k lanovce.
+    sem_wait(boarded);
 
     // Vypíše: A: L idL: going to ski
+    sem_wait(sem_file_write);
     fprintf(output_file, "%d: L %d: going to ski\n", ++(*action_number), idL);
+    (*skiers_not_skiing)--;
+    sem_post(sem_file_write);
+
+    sem_post(unboarded);
 
     // Proces končí
-    return 0;
-}
-
-int initialize_semaphore(sem_t *semaphore, int initialization_value)
-{
-    semaphore = MAP(semaphore);
-    if (semaphore == MAP_FAILED)
-    {
-        fprintf(stderr, "Creating mutual exclusion semaphore failed\n");
-        return 1;
-    }
-    else if (sem_init(semaphore, 1, initialization_value) == -1)
-    {
-        fprintf(stderr, "Initialization of mutual exclusion semaphore failed\n");
-        return 1;
-    }
-    return 0;
+    exit(0);
 }
 
 void alocate_shared_memory(Arguments *args)
 {
+    // shared variables
     action_number = MAP(action_number); // chyba MAP_ANONYMOUS protože windows, může se ignorovat
-    (*action_number)++;
+    bus_stop = MAP(bus_stop);
     num_of_skiers_in_bus = MAP(num_of_skiers_in_bus);
-    waiting = (int *)mmap(NULL, sizeof(*waiting) * args->Z, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    waiting = (int *)mmap(NULL, sizeof(int) * args->Z, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     waiting_sum = MAP(waiting_sum);
+    *waiting_sum = 0;
     bus_capacity = MAP(bus_capacity);
-    bus_stops_semaphores = (sem_t *)mmap(NULL, sizeof(*bus_stops_semaphores) * args->Z, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    skiers_not_skiing = MAP(skiers_not_skiing);
+    *skiers_not_skiing = args->L;
+
+    // shared semaphores
+    sem_file_write = MAP(sem_file_write);
+    sem_skier_waiting = (sem_t *)mmap(NULL, sizeof(sem_t) * args->Z, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    bus_stops_semaphores = (sem_t *)mmap(NULL, sizeof(sem_t) * args->Z, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    boarded = MAP(boarded);
+    unboarded = MAP(unboarded);
 }
 
 void unallocate_shared_memory(Arguments *args)
 {
+    // unmap variables
     UNMAP(action_number);
+    UNMAP(bus_stop);
     UNMAP(num_of_skiers_in_bus);
     munmap(waiting, sizeof(int) * args->Z);
     UNMAP(waiting_sum);
     UNMAP(bus_capacity);
-    UNMAP(mutex);
-    UNMAP(bus);
+    UNMAP(skiers_not_skiing);
+
+    // unmap semaphores
+    UNMAP(sem_file_write);
+    munmap(sem_skier_waiting, sizeof(sem_t) * args->Z);
+    munmap(bus_stops_semaphores, sizeof(sem_t) * args->Z);
     UNMAP(boarded);
+    UNMAP(unboarded);
 }
 
 int initialize_semaphores(Arguments *args)
 {
-    if (initialize_semaphore(mutex, 1) != 0)
+    if (sem_init(sem_file_write, 1, 1) == -1)
     {
+        fprintf(stderr, "Initialization of semaphore sem_file_write failed\n");
         return 1;
     }
-    if (initialize_semaphore(bus, 0) != 0)
+
+    if (sem_init(boarded, 1, 0) == -1)
     {
+        fprintf(stderr, "Initialization of semaphore boarded failed\n");
         return 1;
     }
-    if (initialize_semaphore(boarded, 0) != 0)
+
+    if (sem_init(unboarded, 1, 0) == -1)
     {
+        fprintf(stderr, "Initialization of semaphore unboarded failed\n");
         return 1;
+    }
+
+    for (int i = 0; i < args->Z; i++)
+    {
+        if (sem_init(&sem_skier_waiting[i], 1, 1) == -1)
+        {
+            perror("sem_init");
+            return 1;
+        }
     }
 
     for (int i = 0; i < args->Z; i++)
@@ -289,9 +315,9 @@ int initialize_semaphores(Arguments *args)
 
 void destroy_semaphores(Arguments *args)
 {
-    sem_destroy(mutex);
-    sem_destroy(bus);
+    sem_destroy(sem_file_write);
     sem_destroy(boarded);
+    sem_destroy(unboarded);
 
     for (int i = 0; i < args->Z; i++)
     {
@@ -331,13 +357,13 @@ int main(int argc, char **argv)
     if (skibusPID < 0)
     {
         fprintf(stderr, "Skibus proces problém\n");
-        return 1;
+        exit(1);
     }
     else if (skibusPID == 0)
     {
         skibus_process(&args);
 
-        return 0;
+        exit(0);
     }
 
     // Dále vytvoří L procesů lyžařů.
@@ -347,7 +373,7 @@ int main(int argc, char **argv)
         if (skierPID < 0)
         {
             fprintf(stderr, "Skibus proces problém\n");
-            return 1;
+            exit(1);
         }
         else if (skierPID == 0)
         {
@@ -357,7 +383,7 @@ int main(int argc, char **argv)
 
             skier_process(&args, idZ, i + 1);
 
-            return 0;
+            exit(0);
         }
     }
 
