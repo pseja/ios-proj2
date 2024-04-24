@@ -33,11 +33,9 @@ typedef struct arguments
 FILE *output_file;
 
 int *action_number = NULL;
-int *bus_stop = NULL;
 int *num_of_skiers_in_bus = NULL;
 int *waiting = NULL;
 int *waiting_sum = NULL;
-int *bus_capacity = NULL;
 int *skiers_not_skiing = NULL;
 
 sem_t *sem_file_write = NULL;
@@ -70,8 +68,8 @@ int handle_arguments(Arguments *args, int argc, char **argv)
         return 1;
     }
 
-    int from[5] = {0, 0 + 1, 10, 0, 0};
-    int to[5] = {20000 - 1, 10, 100, 10000, 1000};
+    int from[5] = {1, 1, 10, 0, 0};
+    int to[5] = {19999, 10, 100, 10000, 1000};
 
     for (int i = 1; i < argc; i++)
     {
@@ -162,7 +160,6 @@ int skibus_process(Arguments *args)
         // Vypíše: A: BUS: leaving final
         sem_wait(sem_file_write);
         fprintf(output_file, "%d: BUS: leaving final\n", ++(*action_number));
-        fprintf(output_file, "skiers_not_skiing: %d\n", *skiers_not_skiing);
         sem_post(sem_file_write);
 
         // Pokud ještě nějací lyžaři čekají na některé ze zastávek/mohou přijít na zastávku, tak pokračuje bodem (#)
@@ -236,12 +233,10 @@ void alocate_shared_memory(Arguments *args)
 {
     // shared variables
     action_number = MAP(action_number); // chyba MAP_ANONYMOUS protože windows, může se ignorovat
-    bus_stop = MAP(bus_stop);
     num_of_skiers_in_bus = MAP(num_of_skiers_in_bus);
     waiting = (int *)mmap(NULL, sizeof(int) * args->Z, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     waiting_sum = MAP(waiting_sum);
     *waiting_sum = 0;
-    bus_capacity = MAP(bus_capacity);
     skiers_not_skiing = MAP(skiers_not_skiing);
     *skiers_not_skiing = args->L;
 
@@ -257,11 +252,9 @@ void unallocate_shared_memory(Arguments *args)
 {
     // unmap variables
     UNMAP(action_number);
-    UNMAP(bus_stop);
     UNMAP(num_of_skiers_in_bus);
     munmap(waiting, sizeof(int) * args->Z);
     UNMAP(waiting_sum);
-    UNMAP(bus_capacity);
     UNMAP(skiers_not_skiing);
 
     // unmap semaphores
