@@ -10,9 +10,6 @@
 #include <sys/mman.h>
 #include <stdbool.h>
 
-#define MAX(x, y) (((x) >= (y)) ? (x) : (y))
-#define MIN(x, y) (((x) <= (y)) ? (x) : (y))
-
 #define MAP(pointer) mmap(NULL, sizeof(*(pointer)), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0)
 #define SLEEP(time)                     \
     {                                   \
@@ -35,7 +32,6 @@ FILE *output_file;
 int *action_number = NULL;
 int *num_of_skiers_in_bus = NULL;
 int *waiting = NULL;
-int *waiting_sum = NULL;
 int *skiers_not_skiing = NULL;
 
 sem_t *sem_file_write = NULL;
@@ -43,6 +39,7 @@ sem_t *sem_skier_waiting = NULL;
 sem_t *bus_stops_semaphores = NULL;
 sem_t *boarded = NULL;
 sem_t *unboarded = NULL;
+sem_t *bus_mutex = NULL;
 
 void print_usage()
 {
@@ -92,7 +89,7 @@ int skibus_process(Arguments *args)
 {
     // Po spuštění vypíše: A: BUS: started
     sem_wait(sem_file_write);
-    fprintf(output_file, "%d: BUS: started\n", ++(*action_number));
+    fprintf(output_file, "%d: BUS: started (%d)\n", ++(*action_number), getpid());
     sem_post(sem_file_write);
 
     int idZ = 1;
@@ -182,7 +179,7 @@ int skier_process(Arguments *args, int idZ, int idL)
 
     // Po spuštění vypíše: A: L idL: started
     sem_wait(sem_file_write);
-    fprintf(output_file, "%d: L %d: started\n", ++(*action_number), idL);
+    fprintf(output_file, "%d: L %d: started (%d)\n", ++(*action_number), idL, getpid());
     sem_post(sem_file_write);
 
     // Dojí snídani---čeká v intervalu <0,TL> mikrosekund.
@@ -194,7 +191,6 @@ int skier_process(Arguments *args, int idZ, int idL)
     // Čeká na příjezd skibusu
     sem_wait(&sem_skier_waiting[idZ - 1]);
     waiting[idZ - 1]++;
-    (*waiting_sum)++;
     sem_post(&sem_skier_waiting[idZ - 1]);
 
     // Vypíše: A: L idL: arrived to idZ
@@ -206,7 +202,6 @@ int skier_process(Arguments *args, int idZ, int idL)
     sem_wait(&bus_stops_semaphores[idZ - 1]);
     (*num_of_skiers_in_bus)++;
     waiting[idZ - 1]--;
-    (*waiting_sum)--;
 
     // Vypíše: A: L idL: boarding
     sem_wait(sem_file_write);
@@ -235,8 +230,6 @@ void alocate_shared_memory(Arguments *args)
     action_number = MAP(action_number); // chyba MAP_ANONYMOUS protože windows, může se ignorovat
     num_of_skiers_in_bus = MAP(num_of_skiers_in_bus);
     waiting = (int *)mmap(NULL, sizeof(int) * args->Z, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-    waiting_sum = MAP(waiting_sum);
-    *waiting_sum = 0;
     skiers_not_skiing = MAP(skiers_not_skiing);
     *skiers_not_skiing = args->L;
 
@@ -254,7 +247,6 @@ void unallocate_shared_memory(Arguments *args)
     UNMAP(action_number);
     UNMAP(num_of_skiers_in_bus);
     munmap(waiting, sizeof(int) * args->Z);
-    UNMAP(waiting_sum);
     UNMAP(skiers_not_skiing);
 
     // unmap semaphores
@@ -292,10 +284,7 @@ int initialize_semaphores(Arguments *args)
             perror("sem_init");
             return 1;
         }
-    }
 
-    for (int i = 0; i < args->Z; i++)
-    {
         if (sem_init(&bus_stops_semaphores[i], 1, 0) == -1)
         {
             perror("sem_init");
@@ -311,10 +300,12 @@ void destroy_semaphores(Arguments *args)
     sem_destroy(sem_file_write);
     sem_destroy(boarded);
     sem_destroy(unboarded);
+    sem_destroy(bus_mutex);
 
     for (int i = 0; i < args->Z; i++)
     {
         sem_destroy(&bus_stops_semaphores[i]);
+        sem_destroy(&sem_skier_waiting[i]);
     }
 }
 
