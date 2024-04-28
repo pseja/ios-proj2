@@ -150,6 +150,7 @@ int skibus_process(Arguments *args)
             (*num_of_skiers_in_bus)--;
         }
 
+        // Autobus počká než vystoupí všichni lyžaři z autobusu
         for (int i = 0; i < skiers_in_bus_save; i++)
         {
             sem_wait(unboarded);
@@ -164,11 +165,6 @@ int skibus_process(Arguments *args)
         bus_finished_run = true;
     } while (*skiers_not_skiing > 0);
 
-    for (int i = 0; i < args->L; i++)
-    {
-        sem_wait(skiers_finished);
-    }
-
     // Jinak vypíše: A: BUS: finish
     sem_wait(sem_file_write);
     fprintf(output_file, "%d: BUS: finish\n", ++(*action_number));
@@ -181,8 +177,8 @@ int skibus_process(Arguments *args)
 int skier_process(Arguments *args, int idZ, int idL)
 {
     // Každý lyžař je jednoznačně identifikován číslem idL, 0<idL<=L
-    // parametr funkce
 
+    // parametr funkce
     // Po spuštění vypíše: A: L idL: started
     sem_wait(sem_file_write);
     fprintf(output_file, "%d: L %d: started\n", ++(*action_number), idL);
@@ -195,13 +191,11 @@ int skier_process(Arguments *args, int idZ, int idL)
     // Jde na přidělenou zastávku idZ.
 
     // Čeká na příjezd skibusu
-    sem_wait(&sem_skier_waiting[idZ - 1]);
-    waiting[idZ - 1]++;
-    sem_post(&sem_skier_waiting[idZ - 1]);
 
     // Vypíše: A: L idL: arrived to idZ
     sem_wait(sem_file_write);
     fprintf(output_file, "%d: L %d: arrived to %d\n", ++(*action_number), idL, idZ);
+    waiting[idZ - 1]++;
     sem_post(sem_file_write);
 
     // Po příjezdu skibusu nastoupí (pokud je volná kapacita)
@@ -222,8 +216,6 @@ int skier_process(Arguments *args, int idZ, int idL)
     sem_post(sem_file_write);
 
     sem_post(unboarded);
-
-    sem_post(skiers_finished);
 
     // Proces končí
     exit(0);
@@ -331,7 +323,9 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    if ((output_file = fopen("proj2.out", "w+")) == NULL)
+    output_file = fopen("proj2.out", "w+");
+
+    if (output_file == NULL)
     {
         fprintf(stderr, "Cannot open output.out file\n");
         return 2;
@@ -369,6 +363,7 @@ int main(int argc, char **argv)
         pid_t skierPID = fork();
         while (skierPID < 0)
         {
+            printf("lyžař failnul\n");
             wait(NULL);
             skierPID = fork();
         }
@@ -391,7 +386,7 @@ int main(int argc, char **argv)
         ;
     }
 
-    if (fclose(output_file) == EOF)
+    if ((fclose(output_file)) == EOF)
     {
         fprintf(stderr, "Error closing output.out");
         return 3;
