@@ -1,15 +1,19 @@
+// Lukáš Pšeja (xpsejal00)
+// 28.4.2024
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
 #include <unistd.h>
-#include <sys/types.h> // pid_t type
+#include <sys/types.h> // typ pid_t
 #include <sys/wait.h>
 #include <time.h>
 #include <semaphore.h>
-#include <sys/mman.h>
+#include <sys/mman.h> // mmap, munmap
 #include <stdbool.h>
 
+// chyba MAP_ANONYMOUS se může ignorovat, windows ji nemá rád :((
 #define MAP(pointer) mmap(NULL, sizeof(*(pointer)), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0)
 #define SLEEP(time)                      \
     {                                    \
@@ -27,7 +31,8 @@ typedef struct arguments
     int TB; // Maximální doba jízdy autobusu mezi dvěma zastávkami, 0 <= TB <= 1'000
 } Arguments;
 
-FILE *output_file;
+// globální sdílené proměnné
+FILE *output_file = NULL;
 
 int *action_number = NULL;
 int *num_of_skiers_in_bus = NULL;
@@ -232,33 +237,44 @@ int skier_process(Arguments *args, int idZ, int idL)
     return 0;
 }
 
-void alocate_shared_memory(Arguments *args)
+int alocate_shared_memory(Arguments *args)
 {
-    // shared variables
-    action_number = MAP(action_number); // chyba MAP_ANONYMOUS protože windows, může se ignorovat
-    num_of_skiers_in_bus = MAP(num_of_skiers_in_bus);
-    waiting = (int *)mmap(NULL, sizeof(int) * args->Z, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-    skiers_not_skiing = MAP(skiers_not_skiing);
+    // sdílené proměnné
+    if ((action_number = MAP(action_number)) == MAP_FAILED)
+        return 1;
+    if ((num_of_skiers_in_bus = MAP(num_of_skiers_in_bus)) == MAP_FAILED)
+        return 2;
+    if ((waiting = (int *)mmap(NULL, sizeof(int) * args->Z, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0)) == MAP_FAILED)
+        return 3;
+    if ((skiers_not_skiing = MAP(skiers_not_skiing)) == MAP_FAILED)
+        return 4;
     *skiers_not_skiing = args->L;
 
-    // shared semaphores
-    sem_file_write = MAP(sem_file_write);
-    bus_stops_semaphores = (sem_t *)mmap(NULL, sizeof(sem_t) * args->Z, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-    boarded = MAP(boarded);
-    unboarded = MAP(unboarded);
-    bus_stops_mutexes = (sem_t *)mmap(NULL, sizeof(sem_t) * args->Z, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-    boarding_semaphores = (sem_t *)mmap(NULL, sizeof(sem_t) * args->Z, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-}
+    // sdílené semafory
+    if ((sem_file_write = MAP(sem_file_write)) == MAP_FAILED)
+        return 5;
+    if ((bus_stops_semaphores = (sem_t *)mmap(NULL, sizeof(sem_t) * args->Z, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0)) == MAP_FAILED)
+        return 6;
+    if ((boarded = MAP(boarded)) == MAP_FAILED)
+        return 7;
+    if ((unboarded = MAP(unboarded)) == MAP_FAILED)
+        return 8;
+    if ((bus_stops_mutexes = (sem_t *)mmap(NULL, sizeof(sem_t) * args->Z, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0)) == MAP_FAILED)
+        return 9;
+    if ((boarding_semaphores = (sem_t *)mmap(NULL, sizeof(sem_t) * args->Z, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0)) == MAP_FAILED)
+        return 10;
 
+    return 0;
+}
 void unallocate_shared_memory(Arguments *args)
 {
-    // unmap variables
+    // odalokuj sdílené proměnné
     UNMAP(action_number);
     UNMAP(num_of_skiers_in_bus);
     munmap(waiting, sizeof(int) * args->Z);
     UNMAP(skiers_not_skiing);
 
-    // unmap semaphores
+    // odalokuj sdílené semafory
     UNMAP(sem_file_write);
     munmap(bus_stops_semaphores, sizeof(sem_t) * args->Z);
     UNMAP(boarded);
@@ -333,7 +349,6 @@ int main(int argc, char **argv)
     }
 
     output_file = fopen("proj2.out", "w+");
-
     if (output_file == NULL)
     {
         fprintf(stderr, "Cannot open output.out file\n");
@@ -344,40 +359,53 @@ int main(int argc, char **argv)
     setbuf(output_file, NULL);
     setbuf(stderr, NULL);
 
-    // Alokování sdílená paměti
-    alocate_shared_memory(&args);
+    if (alocate_shared_memory(&args) != 0)
+    {
+        unallocate_shared_memory(&args);
+        destroy_semaphores(&args);
+        return 1;
+    }
 
     if (initialize_semaphores(&args) != 0)
     {
+        destroy_semaphores(&args);
+        unallocate_shared_memory(&args);
         return 1;
     }
 
     // Proces vytváří ihned po spuštění proces skibus.
     pid_t skibusPID = fork();
-    if (skibusPID == 0)
+    if (skibusPID < 0)
     {
-        fprintf(stderr, "Skibus proces problém\n");
-        exit(1);
+        fprintf(stderr, "Skibus process failed - undefined behavior\n");
+
+        destroy_semaphores(&args);
+        unallocate_shared_memory(&args);
+
+        return 1;
     }
     else if (skibusPID == 0)
     {
         skibus_process(&args);
 
-        exit(0);
+        return 0;
     }
 
     // Dále vytvoří L procesů lyžařů.
     for (int i = 0; i < args.L; i++)
     {
         pid_t skierPID = fork();
-        while (skierPID < 0)
+        if (skierPID < 0)
         {
-            printf("Skier %d failed. Waiting for another skier to finish so this skier can be forked again\n", getpid());
-            wait(NULL);
-            skierPID = fork();
+            fprintf(stderr, "Skier %d with process id %d failed - undefined behavior\n", i + 1, getpid());
+
+            destroy_semaphores(&args);
+            unallocate_shared_memory(&args);
+
+            return 1;
         }
 
-        if (skierPID == 0)
+        else if (skierPID == 0)
         {
             // Každému lyžaři při jeho spuštění náhodně přidělí nástupní zastávku.
             srand(getpid() * time(NULL));
@@ -385,7 +413,7 @@ int main(int argc, char **argv)
 
             skier_process(&args, idZ, i + 1);
 
-            exit(0);
+            return 0;
         }
     }
 
