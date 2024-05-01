@@ -1,5 +1,8 @@
 # IOS - projekt 2 (synchronizace)
 
+### Výsledné hodnocení
+(15/15) +1 bonusový bod
+
 Zadání je inspirováno knihou Allen B. Downey: The Little Book of Semaphores (The Senate Bus
 problem)
 
